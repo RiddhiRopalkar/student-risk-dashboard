@@ -1,0 +1,124 @@
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+from snowflake.snowpark.context import get_active_session
+
+# ---------------- Page Setup ----------------
+st.set_page_config(page_title="Student Risk Dashboard", layout="wide")
+
+st.markdown("""
+# 📊 **Student Risk Dashboard**
+_AI-powered early warning system for identifying at-risk students_
+""")
+
+session = get_active_session()
+
+# ---------------- Data Load ----------------
+@st.cache_data
+def load_predictions():
+    df = session.table("PREDICTIONS_WITH_EXPLANATIONS").to_pandas()
+    df.columns = df.columns.str.lower()
+    return df
+
+@st.cache_data
+def load_weekly():
+    df = session.table("STUDENT_8WEEK_DATASET").to_pandas()
+    df.columns = df.columns.str.lower()
+    return df
+
+df = load_predictions()
+weekly_df = load_weekly()
+
+# ---------------- Sidebar Filters ----------------
+st.sidebar.title("🔎 Filters")
+
+student_list = ["All"] + sorted(df.student_id.unique())
+selected_student = st.sidebar.selectbox("Select Student ID", student_list)
+
+risk_levels = ["HIGH", "MEDIUM", "LOW"]
+selected_risks = st.sidebar.multiselect(
+    "Filter by Risk Level", risk_levels, default=risk_levels
+)
+
+# ---------------- Apply Filters ----------------
+filtered = df[df.risk_label.isin(selected_risks)]
+
+if selected_student != "All":
+    filtered = filtered[filtered.student_id == selected_student]
+
+# ✅ REMOVE DUPLICATES (1 row per student)
+filtered = (
+    filtered
+    .sort_values("student_id")
+    .drop_duplicates(subset=["student_id"], keep="first")
+)
+
+# ---------------- Summary KPIs ----------------
+c1, c2, c3 = st.columns(3)
+
+c1.metric("🔴 High Risk Students", (filtered.risk_label == "HIGH").sum())
+c2.metric("📘 Average Score", f"{filtered.avg_score.mean():.2f}")
+c3.metric("🗓️ Average Attendance (%)", f"{filtered.avg_attendance.mean():.2f}")
+
+st.divider()
+
+# ---------------- Table Formatting ----------------
+display_df = filtered.copy()
+
+display_df["risk_badge"] = display_df["risk_label"].map({
+    "HIGH": "🔴 HIGH",
+    "MEDIUM": "🟡 MEDIUM",
+    "LOW": "🟢 LOW"
+})
+
+display_df = display_df[[
+    "student_id",
+    "avg_attendance",
+    "attendance_drop",
+    "avg_score",
+    "attendance_trend",
+    "risk_badge",
+    "risk_score",
+    "action"
+]]
+
+display_df.columns = [
+    "Student ID",
+    "Avg Attendance",
+    "Attendance Drop",
+    "Avg Score",
+    "Attendance Trend",
+    "Risk Level",
+    "Risk Score",
+    "Recommended Action"
+]
+
+st.subheader("📋 Student Risk Overview")
+st.dataframe(display_df, use_container_width=True)
+
+# ---------------- Student Detail Section ----------------
+if selected_student != "All" and not filtered.empty:
+    st.divider()
+
+    s = filtered.iloc[0]
+    w = weekly_df[weekly_df.student_id == selected_student].copy()
+
+    st.subheader(f"🧑‍🎓 Student: {selected_student}")
+    st.info(f"**Reason:** {s.reason}")
+
+    st.progress(int(s.risk_score))
+
+    # ✅ Attendance %
+    w["attendance_pct"] = (w["classes_attended"] / w["total_classes"]) * 100
+    w = w.sort_values("week_number")
+
+    fig, ax = plt.subplots()
+    ax.plot(w["week_number"], w["attendance_pct"], marker="o")
+    ax.set_xlabel("Week")
+    ax.set_ylabel("Attendance (%)")
+    ax.set_title("Weekly Attendance Trend")
+    ax.set_ylim(0, 100)
+
+    st.pyplot(fig)
+
+st.success("This is report ")
